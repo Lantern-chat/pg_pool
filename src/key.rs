@@ -3,7 +3,6 @@ use std::{
     borrow::{Borrow, Cow},
 };
 
-use thorn::query;
 use tokio_postgres::types::Type;
 
 #[derive(Debug, Eq, Hash, PartialEq)]

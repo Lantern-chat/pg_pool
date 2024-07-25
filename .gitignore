@@ -1,0 +1,17 @@
+target
+node_modules
+dist
+docs
+.env
+docker-compose.yml
+.vscode
+deps/**/*.jpg
+deps/**/*.png
+/db/
+/data/
+frontend/build
+**/blurhash/*.jpg
+**/blurhash/*.png
+.dev.vars
+layers_old
+Cargo.lock

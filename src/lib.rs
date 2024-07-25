@@ -1,35 +1,47 @@
-use std::ops::{Deref, DerefMut};
-use std::pin::Pin;
-use std::sync::atomic::AtomicU64;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc, Weak,
-};
-use std::task::{Context, Poll};
-use std::{any::TypeId, collections::VecDeque};
-use std::{borrow::Cow, time::Duration};
+pub extern crate tokio_postgres as pg;
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+extern crate tracing as log;
+
+use std::{
+    collections::VecDeque,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Weak},
+    task::{Context, Poll},
+    time::Duration,
+};
+
+use arc_swap::ArcSwap;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{
-    mpsc::{self, Receiver, Sender},
+    mpsc::{self, Receiver},
     Notify, Semaphore, TryAcquireError,
 };
 
 use parking_lot::{Mutex, RwLock};
 
-use futures::{Future, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
+
 use pg::{
-    tls::MakeTlsConnect, tls::TlsConnect, types::Type, AsyncMessage, Client as PgClient, Config as PgConfig,
-    Connection as PgConnection, Error as PgError, IsolationLevel, NoTls, Notification, Socket, Statement,
-    Transaction as PgTransaction, TransactionBuilder as PgTransactionBuilder,
+    tls::MakeTlsConnect,
+    tls::TlsConnect,
+    types::Type,
+    types::{BorrowToSql, ToSql},
+    AsyncMessage, Client as PgClient, Connection as PgConnection, Error as PgError, Notification, RowStream,
+    Socket, Statement, ToStatement, Transaction as PgTransaction,
 };
+
+pub use pg::Row;
 
 use failsafe::futures::CircuitBreaker;
 use failsafe::Config;
 
-async fn timeout<O, E>(duration: Option<Duration>, future: impl Future<Output = Result<O, E>>) -> Result<O, Error>
+async fn timeout<O, E>(
+    duration: Option<Duration>,
+    future: impl Future<Output = Result<O, E>>,
+) -> Result<O, Error>
 where
     Error: From<E>,
 {
@@ -135,7 +147,10 @@ impl Connection {
             drop(tx);
 
             if released {
-                log::info!("Released {} connection loop to database {name_hint}", ro(this.readonly),);
+                log::info!(
+                    "Released {} connection loop to database {name_hint}",
+                    ro(this.readonly),
+                );
             } else {
                 log::info!("Disconnected from {} database {name_hint}", ro(this.readonly));
             }
@@ -147,7 +162,10 @@ impl Connection {
 
 #[async_trait::async_trait]
 pub trait Connector {
-    async fn connect(&self, config: &PoolConfig) -> Result<(PgClient, Connection, Receiver<Notification>), Error>;
+    async fn connect(
+        &self,
+        config: &PoolConfig,
+    ) -> Result<(PgClient, Connection, Receiver<Notification>), Error>;
 }
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -159,7 +177,10 @@ where
     T::Stream: Sync + Send,
     T::TlsConnect: Sync + Send + TlsConnect<Socket, Future: Send>,
 {
-    async fn connect(&self, config: &PoolConfig) -> Result<(PgClient, Connection, Receiver<Notification>), Error> {
+    async fn connect(
+        &self,
+        config: &PoolConfig,
+    ) -> Result<(PgClient, Connection, Receiver<Notification>), Error> {
         let name = config.pg_config.get_dbname().unwrap_or("Unnamed");
 
         let circuit_breaker = Config::new().build();
@@ -552,14 +573,6 @@ impl Client {
     }
 }
 
-use std::any::Any;
-use thorn::AnyQuery;
-
-use pg::{
-    types::{BorrowToSql, ToSql},
-    Row, RowStream, ToStatement,
-};
-
 // TODO: I'm sure there is something better than a regex for this
 lazy_static::lazy_static! {
     static ref WRITE_REGEX: regex::Regex =
@@ -574,7 +587,10 @@ impl Client {
         I: IntoIterator<Item = P>,
         I::IntoIter: ExactSizeIterator,
     {
-        self.client.query_raw(statement, params).await.map_err(Error::from)
+        self.client
+            .query_raw(statement, params)
+            .await
+            .map_err(Error::from)
     }
 
     pub async fn query_stream<T>(
@@ -585,11 +601,16 @@ impl Client {
     where
         T: ?Sized + ToStatement,
     {
-        fn slice_iter<'a>(s: &'a [&'a (dyn ToSql + Sync)]) -> impl ExactSizeIterator<Item = &'a dyn ToSql> + 'a {
+        fn slice_iter<'a>(
+            s: &'a [&'a (dyn ToSql + Sync)],
+        ) -> impl ExactSizeIterator<Item = &'a dyn ToSql> + 'a {
             s.iter().map(|s| *s as _)
         }
 
-        Ok(self.query_raw(statement, slice_iter(params)).await?.map_err(Error::from))
+        Ok(self
+            .query_raw(statement, slice_iter(params))
+            .await?
+            .map_err(Error::from))
     }
 
     pub async fn execute<T>(&self, statement: &T, params: &[&(dyn ToSql + Sync)]) -> Result<u64, Error>
@@ -610,14 +631,24 @@ impl Client {
     where
         T: ?Sized + ToStatement,
     {
-        self.client.query_one(statement, params).await.map_err(Error::from)
+        self.client
+            .query_one(statement, params)
+            .await
+            .map_err(Error::from)
     }
 
-    pub async fn query_opt<T>(&self, statement: &T, params: &[&(dyn ToSql + Sync)]) -> Result<Option<Row>, Error>
+    pub async fn query_opt<T>(
+        &self,
+        statement: &T,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Option<Row>, Error>
     where
         T: ?Sized + ToStatement,
     {
-        self.client.query_opt(statement, params).await.map_err(Error::from)
+        self.client
+            .query_opt(statement, params)
+            .await
+            .map_err(Error::from)
     }
 }
 
@@ -675,11 +706,16 @@ impl Transaction<'_> {
     where
         T: ?Sized + ToStatement,
     {
-        fn slice_iter<'a>(s: &'a [&'a (dyn ToSql + Sync)]) -> impl ExactSizeIterator<Item = &'a dyn ToSql> + 'a {
+        fn slice_iter<'a>(
+            s: &'a [&'a (dyn ToSql + Sync)],
+        ) -> impl ExactSizeIterator<Item = &'a dyn ToSql> + 'a {
             s.iter().map(|s| *s as _)
         }
 
-        Ok(self.query_raw(statement, slice_iter(params)).await?.map_err(Error::from))
+        Ok(self
+            .query_raw(statement, slice_iter(params))
+            .await?
+            .map_err(Error::from))
     }
 
     pub async fn execute<T>(&self, statement: &T, params: &[&(dyn ToSql + Sync)]) -> Result<u64, Error>
@@ -703,7 +739,11 @@ impl Transaction<'_> {
         self.t.query_one(statement, params).await.map_err(Error::from)
     }
 
-    pub async fn query_opt<T>(&self, statement: &T, params: &[&(dyn ToSql + Sync)]) -> Result<Option<Row>, Error>
+    pub async fn query_opt<T>(
+        &self,
+        statement: &T,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Option<Row>, Error>
     where
         T: ?Sized + ToStatement,
     {
@@ -723,14 +763,20 @@ impl Client {
         query
     }
 
-    pub async fn prepare_cached2<'a, E: From<Row>>(&self, query: &mut Query<'a, E>) -> Result<Statement, Error> {
+    pub async fn prepare_cached2<'a, E: From<Row>>(
+        &self,
+        query: &mut Query<'a, E>,
+    ) -> Result<Statement, Error> {
         if let Some(stmt) = self.stmt_cache.get_keyed(&query.q, &query.param_tys) {
             return Ok(stmt);
         }
 
         log::debug!("Preparing query: \"{}\"", query.q);
 
-        let stmt = self.client.prepare_typed(self.debug_check_readonly(&query.q), &query.param_tys).await?;
+        let stmt = self
+            .client
+            .prepare_typed(self.debug_check_readonly(&query.q), &query.param_tys)
+            .await?;
 
         self.stmt_cache.insert_keyed(
             std::mem::take(&mut query.q),
@@ -745,13 +791,20 @@ impl Client {
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<impl Stream<Item = Result<E, Error>>, Error> {
-        fn slice_iter<'a>(s: &'a [&'a (dyn ToSql + Sync)]) -> impl ExactSizeIterator<Item = &'a dyn ToSql> + 'a {
+        fn slice_iter<'a>(
+            s: &'a [&'a (dyn ToSql + Sync)],
+        ) -> impl ExactSizeIterator<Item = &'a dyn ToSql> + 'a {
             s.iter().map(|s| *s as _)
         }
 
         let mut query = query?;
 
-        let stream = self.query_raw(&self.prepare_cached2(&mut query).await?, slice_iter(&query.params)).await?;
+        let stream = self
+            .query_raw(
+                &self.prepare_cached2(&mut query).await?,
+                slice_iter(&query.params),
+            )
+            .await?;
 
         Ok(stream.map(|r| match r {
             Ok(row) => Ok(E::from(row)),
@@ -777,7 +830,9 @@ impl Client {
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<E, Error> {
         let mut query = query?;
-        let row = self.query_one(&self.prepare_cached2(&mut query).await?, &query.params).await?;
+        let row = self
+            .query_one(&self.prepare_cached2(&mut query).await?, &query.params)
+            .await?;
 
         Ok(E::from(row))
     }
@@ -787,7 +842,9 @@ impl Client {
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<Option<E>, Error> {
         let mut query = query?;
-        let row = self.query_opt(&self.prepare_cached2(&mut query).await?, &query.params).await?;
+        let row = self
+            .query_opt(&self.prepare_cached2(&mut query).await?, &query.params)
+            .await?;
 
         Ok(row.map(E::from))
     }
@@ -797,7 +854,8 @@ impl Client {
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<u64, Error> {
         let mut query = query?;
-        self.execute(&self.prepare_cached2(&mut query).await?, &query.params).await
+        self.execute(&self.prepare_cached2(&mut query).await?, &query.params)
+            .await
     }
 }
 
@@ -811,14 +869,20 @@ impl Transaction<'_> {
         query
     }
 
-    pub async fn prepare_cached2<'a, E: From<Row>>(&self, query: &mut Query<'a, E>) -> Result<Statement, Error> {
+    pub async fn prepare_cached2<'a, E: From<Row>>(
+        &self,
+        query: &mut Query<'a, E>,
+    ) -> Result<Statement, Error> {
         if let Some(stmt) = self.stmt_cache.get_keyed(&query.q, &query.param_tys) {
             return Ok(stmt);
         }
 
         log::debug!("Preparing query: \"{}\"", query.q);
 
-        let stmt = self.t.prepare_typed(self.debug_check_readonly(&query.q), &query.param_tys).await?;
+        let stmt = self
+            .t
+            .prepare_typed(self.debug_check_readonly(&query.q), &query.param_tys)
+            .await?;
 
         self.stmt_cache.insert_keyed(
             std::mem::take(&mut query.q),
@@ -833,12 +897,19 @@ impl Transaction<'_> {
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<impl Stream<Item = Result<E, Error>>, Error> {
-        fn slice_iter<'a>(s: &'a [&'a (dyn ToSql + Sync)]) -> impl ExactSizeIterator<Item = &'a dyn ToSql> + 'a {
+        fn slice_iter<'a>(
+            s: &'a [&'a (dyn ToSql + Sync)],
+        ) -> impl ExactSizeIterator<Item = &'a dyn ToSql> + 'a {
             s.iter().map(|s| *s as _)
         }
 
         let mut query = query?;
-        let stream = self.query_raw(&self.prepare_cached2(&mut query).await?, slice_iter(&query.params)).await?;
+        let stream = self
+            .query_raw(
+                &self.prepare_cached2(&mut query).await?,
+                slice_iter(&query.params),
+            )
+            .await?;
 
         Ok(stream.map(|r| match r {
             Ok(row) => Ok(E::from(row)),
@@ -864,7 +935,9 @@ impl Transaction<'_> {
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<E, Error> {
         let mut query = query?;
-        let row = self.query_one(&self.prepare_cached2(&mut query).await?, &query.params).await?;
+        let row = self
+            .query_one(&self.prepare_cached2(&mut query).await?, &query.params)
+            .await?;
 
         Ok(E::from(row))
     }
@@ -874,7 +947,9 @@ impl Transaction<'_> {
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<Option<E>, Error> {
         let mut query = query?;
-        let row = self.query_opt(&self.prepare_cached2(&mut query).await?, &query.params).await?;
+        let row = self
+            .query_opt(&self.prepare_cached2(&mut query).await?, &query.params)
+            .await?;
 
         Ok(row.map(E::from))
     }
@@ -884,7 +959,8 @@ impl Transaction<'_> {
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<u64, Error> {
         let mut query = query?;
-        self.execute(&self.prepare_cached2(&mut query).await?, &query.params).await
+        self.execute(&self.prepare_cached2(&mut query).await?, &query.params)
+            .await
     }
 }
 
