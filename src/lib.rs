@@ -6,8 +6,10 @@ use std::{
     collections::VecDeque,
     ops::{Deref, DerefMut},
     pin::Pin,
-    sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, LazyLock, Weak,
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -25,19 +27,17 @@ use parking_lot::{Mutex, RwLock};
 use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
 
 use pg::{
-    tls::MakeTlsConnect,
-    tls::TlsConnect,
-    types::Type,
-    types::{BorrowToSql, ToSql},
+    tls::{MakeTlsConnect, TlsConnect},
+    types::{BorrowToSql, ToSql, Type},
     AsyncMessage, Client as PgClient, Connection as PgConnection, Error as PgError, Notification, RowStream,
     Socket, Statement, ToStatement, Transaction as PgTransaction,
 };
 
 pub use pg::Row;
 
-use failsafe::futures::CircuitBreaker;
-use failsafe::Config;
+use failsafe::{futures::CircuitBreaker, Config};
 
+#[inline]
 async fn timeout<O, E>(
     duration: Option<Duration>,
     future: impl Future<Output = Result<O, E>>,
@@ -575,10 +575,31 @@ impl Client {
     }
 }
 
-// TODO: I'm sure there is something better than a regex for this
-lazy_static::lazy_static! {
-    static ref WRITE_REGEX: regex::Regex =
-        regex::RegexBuilder::new(r"\b(UPDATE|INSERT|ALTER|CREATE|DROP|GRANT|REVOKE|DELETE|TRUNCATE)\b").build().unwrap();
+#[inline]
+#[cfg(debug_assertions)]
+fn check_readonly(query: &str, readonly: bool) -> &str {
+    use aho_corasick::{AhoCorasick, AhoCorasickBuilder};
+
+    static WRITE_PATTERNS: LazyLock<AhoCorasick> = LazyLock::new(|| {
+        AhoCorasickBuilder::new()
+            .ascii_case_insensitive(true)
+            .build([
+                "UPDATE", "INSERT", "ALTER", "CREATE", "DROP", "GRANT", "REVOKE", "DELETE", "TRUNCATE",
+            ])
+            .unwrap()
+    });
+
+    if readonly {
+        assert!(!WRITE_PATTERNS.is_match(query));
+    }
+
+    query
+}
+
+#[inline(always)]
+#[cfg(not(debug_assertions))]
+const fn check_readonly(query: &str, _readonly: bool) -> &str {
+    query
 }
 
 impl Client {
@@ -756,15 +777,6 @@ impl Transaction<'_> {
 use thorn::macros::{Query, SqlFormatError};
 
 impl Client {
-    #[inline(always)]
-    fn debug_check_readonly<'a>(&self, query: &'a str) -> &'a str {
-        if cfg!(debug_assertions) && self.readonly {
-            assert!(!WRITE_REGEX.is_match(query));
-        }
-
-        query
-    }
-
     pub async fn prepare_cached2<'a, E: From<Row>>(
         &self,
         query: &mut Query<'a, E>,
@@ -777,7 +789,7 @@ impl Client {
 
         let stmt = self
             .client
-            .prepare_typed(self.debug_check_readonly(&query.q), &query.param_tys)
+            .prepare_typed(check_readonly(&query.q, self.readonly), &query.param_tys)
             .await?;
 
         self.stmt_cache.insert_keyed(
@@ -862,15 +874,6 @@ impl Client {
 }
 
 impl Transaction<'_> {
-    #[inline(always)]
-    fn debug_check_readonly<'a>(&self, query: &'a str) -> &'a str {
-        if cfg!(debug_assertions) && self.readonly {
-            assert!(!WRITE_REGEX.is_match(query));
-        }
-
-        query
-    }
-
     pub async fn prepare_cached2<'a, E: From<Row>>(
         &self,
         query: &mut Query<'a, E>,
@@ -883,7 +886,7 @@ impl Transaction<'_> {
 
         let stmt = self
             .t
-            .prepare_typed(self.debug_check_readonly(&query.q), &query.param_tys)
+            .prepare_typed(check_readonly(&query.q, self.readonly), &query.param_tys)
             .await?;
 
         self.stmt_cache.insert_keyed(

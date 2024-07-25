@@ -81,7 +81,10 @@ impl PoolConfig {
             pg_config,
             timeouts: Timeouts::default(),
             readonly: false,
-            max_connections: num_cpus::get_physical() * 4,
+            max_connections: match std::thread::available_parallelism() {
+                Ok(n) => n.get() * 4,
+                Err(_) => 8,
+            },
             max_retries: 6,
             channel_size: 64,
             recycling_method: RecyclingMethod::Fast,
