@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use pg::Config as PgConfig;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timeouts {
     /// Timeout when waiting for a slot to become available
     pub wait: Option<Duration>,
@@ -13,30 +13,28 @@ pub struct Timeouts {
 }
 
 impl Timeouts {
-    pub fn wait(mut self, timeout: Duration) -> Self {
+    /// Create a timeout config with no timeouts set
+    pub const fn new() -> Self {
+        Self {
+            wait: None,
+            create: None,
+            recycle: None,
+        }
+    }
+
+    pub const fn wait(mut self, timeout: Duration) -> Self {
         self.wait = Some(timeout);
         self
     }
 
-    pub fn create(mut self, timeout: Duration) -> Self {
+    pub const fn create(mut self, timeout: Duration) -> Self {
         self.create = Some(timeout);
         self
     }
 
-    pub fn recycle(mut self, timeout: Duration) -> Self {
+    pub const fn recycle(mut self, timeout: Duration) -> Self {
         self.recycle = Some(timeout);
         self
-    }
-}
-
-impl Default for Timeouts {
-    /// Create a timeout config with no timeouts set
-    fn default() -> Self {
-        Self {
-            create: None,
-            wait: None,
-            recycle: None,
-        }
     }
 }
 

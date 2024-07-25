@@ -1,4 +1,4 @@
-struct SqlIterator<'a> {
+pub struct SqlIterator<'a> {
     sql: &'a str,
 }
 

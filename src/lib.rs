@@ -108,7 +108,7 @@ impl Connection {
 
         let name_hint = name_hint.unwrap_or_else(|| "Unnamed".to_owned());
 
-        tokio::spawn(async move {
+        _ = tokio::spawn(async move {
             let mut stream = this.stream.lock().await;
 
             let released = loop {
@@ -319,7 +319,7 @@ impl Pool {
     }
 
     pub async fn try_get(&self) -> Result<Object, Error> {
-        let mut timeouts = self.config.load().timeouts.clone();
+        let mut timeouts = self.config.load().timeouts;
         timeouts.wait = Some(Duration::from_secs(0));
         self.timeout_get(&timeouts).await
     }
@@ -388,6 +388,7 @@ impl Pool {
     }
 }
 
+/// Set of `StatementCache`s. This exists to allow for clearing all caches at once.
 #[derive(Default)]
 pub struct StatementCaches {
     caches: RwLock<Vec<Weak<StatementCache>>>,
@@ -537,7 +538,7 @@ pub struct Client {
     rx: Receiver<Notification>,
 
     // NOTE: This is an Arc to allow cloning it to transactions without needing a ref
-    pub stmt_cache: Arc<StatementCache>,
+    pub(crate) stmt_cache: Arc<StatementCache>,
 }
 
 impl AsRef<PgClient> for Client {
@@ -564,7 +565,7 @@ impl Client {
         self.rx.recv().await
     }
 
-    pub async fn transaction(&mut self) -> Result<Transaction, Error> {
+    pub async fn transaction(&mut self) -> Result<Transaction<'_>, Error> {
         Ok(Transaction {
             readonly: self.readonly,
             id: self.conn.id,
@@ -662,7 +663,7 @@ impl Transaction<'_> {
         self.t.rollback().await.map_err(Error::from)
     }
 
-    pub async fn transaction(&mut self) -> Result<Transaction, Error> {
+    pub async fn transaction(&mut self) -> Result<Transaction<'_>, Error> {
         Ok(Transaction {
             readonly: self.readonly,
             id: self.id,
@@ -671,7 +672,7 @@ impl Transaction<'_> {
         })
     }
 
-    pub async fn savepoint<I>(&mut self, name: I) -> Result<Transaction, Error>
+    pub async fn savepoint<I>(&mut self, name: I) -> Result<Transaction<'_>, Error>
     where
         I: Into<String>,
     {
