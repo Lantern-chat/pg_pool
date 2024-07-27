@@ -28,7 +28,7 @@ use futures::{Future, Stream, StreamExt, TryFutureExt, TryStreamExt};
 
 use pg::{
     tls::{MakeTlsConnect, TlsConnect},
-    types::{BorrowToSql, ToSql, Type},
+    types::{BorrowToSql, ToSql},
     AsyncMessage, Client as PgClient, Connection as PgConnection, Error as PgError, Notification, RowStream,
     Socket, Statement, ToStatement, Transaction as PgTransaction,
 };
@@ -505,7 +505,7 @@ impl Drop for Object {
     }
 }
 
-mod key;
+pub mod key;
 
 use key::{StatementCacheKey, StaticStatementCacheKey};
 
@@ -515,14 +515,12 @@ pub struct StatementCache {
 }
 
 impl StatementCache {
-    pub fn insert_keyed(&self, query: String, types: Vec<Type>, stmt: Statement) {
-        let key = StaticStatementCacheKey::owned(query, types);
-        _ = self.cache.entry(key).insert_entry(stmt);
+    pub fn get(&self, key: &StatementCacheKey) -> Option<Statement> {
+        self.cache.read(key, |_k, v| v.clone())
     }
 
-    pub fn get_keyed(&self, query: &str, types: &[Type]) -> Option<Statement> {
-        let key = StatementCacheKey::borrowed(query, types);
-        self.cache.read(&key, |_k, v| v.clone())
+    pub fn set(&self, key: StaticStatementCacheKey, stmt: Statement) {
+        _ = self.cache.entry(key).insert_entry(stmt);
     }
 
     pub fn clear(&self) {
@@ -774,34 +772,48 @@ impl Transaction<'_> {
     }
 }
 
-use thorn::macros::{Query, SqlFormatError};
+use thorn::macros::{Query, RowColumns, SqlFormatError};
 
 impl Client {
-    pub async fn prepare_cached2<'a, E: From<Row>>(
+    pub async fn prepare_cached2<'a, E: RowColumns>(
         &self,
         query: &mut Query<'a, E>,
     ) -> Result<Statement, Error> {
-        if let Some(stmt) = self.stmt_cache.get_keyed(&query.q, &query.param_tys) {
+        let key = match query.cached {
+            Some(_) => StatementCacheKey::typed::<E>(),
+            None => StatementCacheKey::borrowed(&query.q, &query.param_tys),
+        };
+
+        if let Some(stmt) = self.stmt_cache.get(&key) {
             return Ok(stmt);
         }
 
         log::debug!("Preparing query: \"{}\"", query.q);
 
+        let (q, tys) = match query.cached {
+            Some(cached) => (&cached.q, &cached.params),
+            None => (&query.q, &query.param_tys),
+        };
+
         let stmt = self
             .client
-            .prepare_typed(check_readonly(&query.q, self.readonly), &query.param_tys)
+            .prepare_typed(check_readonly(q, self.readonly), tys)
             .await?;
 
-        self.stmt_cache.insert_keyed(
-            std::mem::take(&mut query.q),
-            std::mem::take(&mut query.param_tys),
-            stmt.clone(),
-        );
+        let key = match query.cached {
+            Some(_) => StaticStatementCacheKey::typed::<E>(),
+            None => StaticStatementCacheKey::owned(
+                std::mem::take(&mut query.q),
+                std::mem::take(&mut query.param_tys),
+            ),
+        };
+
+        self.stmt_cache.set(key, stmt.clone());
 
         Ok(stmt)
     }
 
-    pub async fn query_stream2<'a, E: From<Row>>(
+    pub async fn query_stream2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<impl Stream<Item = Result<E, Error>>, Error> {
@@ -826,7 +838,7 @@ impl Client {
         }))
     }
 
-    pub async fn query2<'a, E: From<Row>>(
+    pub async fn query2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<Vec<E>, Error> {
@@ -839,7 +851,7 @@ impl Client {
         Ok(rows)
     }
 
-    pub async fn query_one2<'a, E: From<Row>>(
+    pub async fn query_one2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<E, Error> {
@@ -851,7 +863,7 @@ impl Client {
         Ok(E::from(row))
     }
 
-    pub async fn query_opt2<'a, E: From<Row>>(
+    pub async fn query_opt2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<Option<E>, Error> {
@@ -863,7 +875,7 @@ impl Client {
         Ok(row.map(E::from))
     }
 
-    pub async fn execute2<'a, E: From<Row>>(
+    pub async fn execute2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<u64, Error> {
@@ -874,31 +886,45 @@ impl Client {
 }
 
 impl Transaction<'_> {
-    pub async fn prepare_cached2<'a, E: From<Row>>(
+    pub async fn prepare_cached2<'a, E: RowColumns>(
         &self,
         query: &mut Query<'a, E>,
     ) -> Result<Statement, Error> {
-        if let Some(stmt) = self.stmt_cache.get_keyed(&query.q, &query.param_tys) {
+        let key = match query.cached {
+            Some(_) => StatementCacheKey::typed::<E>(),
+            None => StatementCacheKey::borrowed(&query.q, &query.param_tys),
+        };
+
+        if let Some(stmt) = self.stmt_cache.get(&key) {
             return Ok(stmt);
         }
 
-        log::debug!("Preparing query: \"{}\"", query.q);
+        log::debug!("Preparing transaction query: \"{}\"", query.q);
+
+        let (q, tys) = match query.cached {
+            Some(cached) => (&cached.q, &cached.params),
+            None => (&query.q, &query.param_tys),
+        };
 
         let stmt = self
             .t
-            .prepare_typed(check_readonly(&query.q, self.readonly), &query.param_tys)
+            .prepare_typed(check_readonly(q, self.readonly), tys)
             .await?;
 
-        self.stmt_cache.insert_keyed(
-            std::mem::take(&mut query.q),
-            std::mem::take(&mut query.param_tys),
-            stmt.clone(),
-        );
+        let key = match query.cached {
+            Some(_) => StaticStatementCacheKey::typed::<E>(),
+            None => StaticStatementCacheKey::owned(
+                std::mem::take(&mut query.q),
+                std::mem::take(&mut query.param_tys),
+            ),
+        };
+
+        self.stmt_cache.set(key, stmt.clone());
 
         Ok(stmt)
     }
 
-    pub async fn query_stream2<'a, E: From<Row>>(
+    pub async fn query_stream2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<impl Stream<Item = Result<E, Error>>, Error> {
@@ -922,7 +948,7 @@ impl Transaction<'_> {
         }))
     }
 
-    pub async fn query2<'a, E: From<Row>>(
+    pub async fn query2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<Vec<E>, Error> {
@@ -935,7 +961,7 @@ impl Transaction<'_> {
         Ok(rows)
     }
 
-    pub async fn query_one2<'a, E: From<Row>>(
+    pub async fn query_one2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<E, Error> {
@@ -947,7 +973,7 @@ impl Transaction<'_> {
         Ok(E::from(row))
     }
 
-    pub async fn query_opt2<'a, E: From<Row>>(
+    pub async fn query_opt2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<Option<E>, Error> {
@@ -959,7 +985,7 @@ impl Transaction<'_> {
         Ok(row.map(E::from))
     }
 
-    pub async fn execute2<'a, E: From<Row>>(
+    pub async fn execute2<'a, E: RowColumns>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<u64, Error> {
@@ -971,7 +997,7 @@ impl Transaction<'_> {
 
 #[async_trait::async_trait]
 pub trait AnyClient {
-    async fn query_stream2<'a, E: From<Row> + Send + 'static>(
+    async fn query_stream2<'a, E: RowColumns + Send + Sync + 'static>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<BoxStream<'static, Result<E, Error>>, Error>;
@@ -979,7 +1005,7 @@ pub trait AnyClient {
 
 #[async_trait::async_trait]
 impl AnyClient for Transaction<'_> {
-    async fn query_stream2<'a, E: From<Row> + Send + 'static>(
+    async fn query_stream2<'a, E: RowColumns + Send + Sync + 'static>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<BoxStream<'static, Result<E, Error>>, Error> {
@@ -991,7 +1017,7 @@ impl AnyClient for Transaction<'_> {
 
 #[async_trait::async_trait]
 impl AnyClient for Client {
-    async fn query_stream2<'a, E: From<Row> + Send + 'static>(
+    async fn query_stream2<'a, E: RowColumns + Send + Sync + 'static>(
         &self,
         query: Result<Query<'a, E>, SqlFormatError>,
     ) -> Result<BoxStream<'static, Result<E, Error>>, Error> {

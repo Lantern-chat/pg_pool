@@ -1,5 +1,5 @@
 [package]
-name = "db"
+name = "pg_pool"
 version = "0.1.0"
 authors = ["novacrazy <novacrazy@gmail.com>"]
 edition = "2021"
