@@ -511,7 +511,7 @@ use key::{StatementCacheKey, StaticStatementCacheKey};
 
 #[derive(Default)]
 pub struct StatementCache {
-    cache: scc::HashMap<StaticStatementCacheKey, Statement, ahash::RandomState>,
+    cache: scc::HashMap<StaticStatementCacheKey, Statement, foldhash::fast::RandomState>,
 }
 
 impl StatementCache {
