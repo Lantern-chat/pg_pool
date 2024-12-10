@@ -580,7 +580,7 @@ fn check_readonly(query: &str, readonly: bool) -> &str {
 
     static WRITE_PATTERNS: LazyLock<AhoCorasick> = LazyLock::new(|| {
         AhoCorasickBuilder::new()
-            .ascii_case_insensitive(true)
+            .ascii_case_insensitive(false)
             .build([
                 "UPDATE", "INSERT", "ALTER", "CREATE", "DROP", "GRANT", "REVOKE", "DELETE", "TRUNCATE",
             ])
